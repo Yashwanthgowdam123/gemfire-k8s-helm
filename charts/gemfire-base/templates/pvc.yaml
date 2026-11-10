@@ -1,0 +1,18 @@
+{{/*
+  StatefulSets own their PVCs through volumeClaimTemplates (one PVC per pod, stable names
+  data-<release>-server-N). This file only defines the shared template; it creates no object.
+  A PVC is NOT a backup. PVCs are retained on scale-down/uninstall (persistence.retentionPolicy)
+  so persistent data is never deleted implicitly; deleting them is an explicit operator action.
+*/}}
+{{- define "gf.volumeClaimTemplates" -}}
+volumeClaimTemplates:
+- metadata:
+    name: data
+    labels: {{ include "gf.labels" .root | nindent 6 }}
+  spec:
+    accessModes: ["ReadWriteOnce"]
+    storageClassName: {{ .root.Values.storage.storageClassName }}
+    resources:
+      requests:
+        storage: {{ .size }}
+{{- end -}}

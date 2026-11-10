@@ -1,0 +1,16 @@
+# Voluntary disruptions (node drains, upgrades) may take down at most one member at a time,
+# which preserves partition redundancy while a replacement recovers from disk.
+{{- if .Values.pdb.enabled }}
+{{- range $c := list "locator" "server" }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "gf.name" $ }}-{{ $c }}
+  labels: {{ include "gf.labels" $ | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {{ include "gf.selector" (dict "root" $ "component" $c) | nindent 6 }}
+{{- end }}
+{{- end }}

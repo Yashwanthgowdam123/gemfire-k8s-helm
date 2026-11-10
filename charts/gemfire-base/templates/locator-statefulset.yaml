@@ -1,0 +1,102 @@
+# Locators: membership + client/WAN discovery. They hold no region data, only their own
+# working directory (membership/view state) on a small PVC.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gf.name" . }}-locator
+  labels: {{ include "gf.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gf.name" . }}-locator-hl
+  replicas: {{ .Values.gemfire.cluster.locatorCount }}
+  # Parallel: a restarting site must be able to start all locators at once.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: { partition: {{ .Values.rollout.locatorPartition }} }
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ .Values.persistence.retentionPolicy }}
+    whenScaled: {{ .Values.persistence.retentionPolicy }}
+  selector:
+    matchLabels: {{ include "gf.selector" (dict "root" . "component" "locator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gf.labels" . | nindent 8 }}
+        app.kubernetes.io/component: locator
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "gf.name" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: {{ .Values.runAsUser }}
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      {{- include "gf.scheduling" (dict "root" . "component" "locator") | nindent 6 }}
+      containers:
+      - name: locator
+        image: {{ include "gf.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["locator"]
+        securityContext: {{ include "gf.securityContext" . | nindent 10 }}
+        env:
+        - { name: POD_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+        - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+        - { name: HEADLESS_SERVICE, value: {{ include "gf.name" . }}-locator-hl }
+        - { name: CLUSTER_DOMAIN, value: {{ .Values.site.clusterDomain | quote }} }
+        - { name: LOCATOR_PORT, value: {{ .Values.ports.locator | quote }} }
+        - { name: SECURITY_ENABLED, value: {{ .Values.security.enabled | quote }} }
+        - name: JAVA_OPTS
+          value: >-
+            -XX:MaxRAMPercentage={{ .Values.gemfire.jvm.heapPercentOfMemoryLimit }}
+            {{- if .Values.monitoring.jmxExporter.enabled }}
+            -javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar={{ .Values.ports.metrics }}:/config/jmx-exporter.yaml
+            {{- end }}
+        ports:
+        - { name: locator, containerPort: {{ .Values.ports.locator }} }
+        - { name: metrics, containerPort: {{ .Values.ports.metrics }} }
+        resources: {{ toYaml .Values.resources.locator | nindent 10 }}
+        startupProbe:
+          tcpSocket: { port: locator }
+          periodSeconds: 5
+          failureThreshold: 60
+        readinessProbe:
+          tcpSocket: { port: locator }
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket: { port: locator }
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+        - { name: data, mountPath: /data }
+        - { name: config, mountPath: /config, readOnly: true }
+        - { name: runtime, mountPath: /runtime }
+        - { name: logs, mountPath: /logs }
+        - { name: tmp, mountPath: /tmp }
+        {{- if .Values.security.enabled }}
+        - { name: tls, mountPath: /tls, readOnly: true }
+        - { name: tls-password, mountPath: /tls-password, readOnly: true }
+        - { name: credentials, mountPath: /credentials, readOnly: true }
+        {{- end }}
+      {{- if .Values.logging.sidecar }}
+      - name: log-tail
+        image: {{ include "gf.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/sh", "-c", "until ls /logs/*.log >/dev/null 2>&1; do sleep 2; done; exec tail -n +1 -F /logs/*.log"]
+        securityContext: {{ include "gf.securityContext" . | nindent 10 }}
+        resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 100m, memory: 64Mi } }
+        volumeMounts:
+        - { name: logs, mountPath: /logs, readOnly: true }
+      {{- end }}
+      volumes:
+      - { name: config, configMap: { name: {{ include "gf.name" . }}-config } }
+      - { name: runtime, emptyDir: { medium: Memory, sizeLimit: 8Mi } }
+      - { name: logs, emptyDir: { sizeLimit: 1Gi } }
+      - { name: tmp, emptyDir: { sizeLimit: 256Mi } }
+      {{- if .Values.security.enabled }}
+      - { name: tls, secret: { secretName: {{ .Values.site.tls.secretName }}, defaultMode: 0440 } }
+      - { name: tls-password, secret: { secretName: {{ .Values.site.tls.passwordSecretName }}, defaultMode: 0440 } }
+      - { name: credentials, secret: { secretName: {{ .Values.site.credentialsSecretName }}, defaultMode: 0440 } }
+      {{- end }}
+  {{- include "gf.volumeClaimTemplates" (dict "root" . "size" .Values.storage.locatorSize) | nindent 2 }}

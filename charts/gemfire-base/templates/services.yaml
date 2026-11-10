@@ -1,0 +1,27 @@
+# ClusterIP entry points for in-cluster clients. Clients connect to the locator Service
+# and are then handed pod FQDNs (hostname-for-clients) for the actual data connections.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gf.name" . }}-locator
+  labels: {{ include "gf.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "gf.selector" (dict "root" . "component" "locator") | nindent 4 }}
+  ports:
+  - { name: locator, port: {{ .Values.ports.locator }}, targetPort: locator }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gf.name" . }}-metrics
+  labels:
+    {{- include "gf.labels" . | nindent 4 }}
+    gemfire/metrics: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gemfire
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+  - { name: metrics, port: {{ .Values.ports.metrics }}, targetPort: metrics }

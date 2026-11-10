@@ -1,0 +1,102 @@
+# Chart-owned defaults ONLY. Application-owned keys (application, gemfire, resources,
+# storage, wan, schemaVersion) come from gemfire-application-config/<app>/<env>/values.yaml.
+# Defaults below for optional shared keys are identical at every site by construction.
+
+# ---- image: set by the pipeline from the promotion manifest (never "latest") ----------
+image:
+  repository: ""        # required
+  digest: ""            # sha256:... (what the pipeline always sets)
+  tag: ""               # LOCAL DEMO ONLY (kind), never "latest"; ignored when digest is set
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# ---- ports (chart-owned, identical at every site) -------------------------------------
+ports:
+  locator: 10334
+  server: 40404
+  wanReceiverStart: 5000
+  wanReceiverEnd: 5010
+  metrics: 9404
+
+# ---- defaults for optional shared keys -------------------------------------------------
+gemfire:
+  jvm:
+    heapPercentOfMemoryLimit: 60
+  properties: {}
+  cacheServer:
+    maxConnections: 200
+    maxThreads: 0
+    maximumTimeBetweenPingsMs: 60000
+  diskStore:
+    autoCompact: true
+    compactionThreshold: 50
+    maxOplogSizeMb: 1024
+    allowForceCompaction: false
+    queueSize: 0
+    diskUsageWarningPercentage: 80
+    diskUsageCriticalPercentage: 95
+  pdx:
+    autoSerializableClasses: []
+resources:
+  locator:
+    requests: { cpu: 100m, memory: 512Mi }
+    limits:   { cpu: 500m, memory: 1Gi }
+storage:
+  locatorSize: 1Gi
+wan:
+  receiver:
+    maximumTimeBetweenPingsMs: 60000
+  sender:
+    persistent: true
+    parallel: true
+    dispatcherThreads: 2
+    batchSize: 100
+    batchTimeIntervalMs: 1000
+    maximumQueueMemoryMb: 50
+    orderPolicy: KEY
+    conflationEnabled: false
+    diskSynchronous: true
+    alertThresholdMs: 0
+
+# ---- security (chart-owned). Secret NAMES come from the generated site identity -------
+security:
+  enabled: true
+  # DEMO ONLY: ExampleSecurityManager reads users/roles from security.json in the
+  # credentials Secret. For real use, supply your own SecurityManager on the image classpath.
+  securityManager: org.apache.geode.examples.security.ExampleSecurityManager
+  peerAuthInit: org.apache.geode.security.templates.UserPasswordAuthInit.create
+  tls:
+    endpointIdentification: false   # set true once certificate SANs are confirmed
+    certManager:
+      enabled: false                # true: chart creates the cert-manager Certificate
+      issuerKind: ClusterIssuer     # issuer NAME comes from site.tls.issuerName (per-env CA)
+
+# ---- Kubernetes runtime --------------------------------------------------------------
+runAsUser: 1000
+terminationGracePeriodSeconds: 180
+scheduling:
+  antiAffinity: soft           # soft | hard (hard needs >= memberCount schedulable nodes)
+  topologyKey: kubernetes.io/hostname
+  zoneSpread: true             # soft spread across topology.kubernetes.io/zone
+rollout:
+  serverPartition: 0           # StatefulSet partition for staged rollouts
+  locatorPartition: 0
+persistence:
+  retentionPolicy: Retain      # PVCs survive scale-down and delete: protects data
+probes:
+  serverStartupFailureThreshold: 180   # x10s = 30 min for disk-store recovery
+pdb:
+  enabled: true
+networkPolicy:
+  enabled: true
+  clientNamespaceLabels: []    # e.g. [{ "kubernetes.io/metadata.name": ecom-dev-apps }]
+  monitoringNamespace: monitoring
+  dnsNamespace: kube-system
+monitoring:
+  jmxExporter:
+    enabled: false             # needs the exporter jar baked into the image (see image/Dockerfile)
+  serviceMonitor:
+    enabled: false             # needs the Prometheus Operator CRDs
+    interval: 30s
+logging:
+  sidecar: true                # tails Geode log files to stdout for Splunk/kubectl logs

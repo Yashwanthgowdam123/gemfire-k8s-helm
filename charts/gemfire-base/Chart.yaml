@@ -1,0 +1,12 @@
+apiVersion: v2
+name: gemfire-base
+description: >-
+  Reusable Apache Geode site (locators + servers) for one application/environment/site.
+  One release per site; the same chart serves every application and environment.
+type: application
+# Chart version is the unit of promotion. Bump on ANY template change (semver).
+version: 0.1.0
+# Geode version this chart is written and tested against (informational; the running
+# version is set by the image digest). Research date and sources: docs/architecture.md.
+appVersion: "2.0.1"
+kubeVersion: ">=1.27.0-0"   # needs StatefulSet persistentVolumeClaimRetentionPolicy

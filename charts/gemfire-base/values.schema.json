@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gemfire-base chart values",
+  "description": "Validates chart-owned and site-identity keys. Application-owned keys (application, gemfire, resources, storage, wan, schemaVersion) are validated by gemfire-application-config/schemas/application-config.schema.json and only checked here for presence, so rules are not duplicated.",
+  "type": "object",
+  "required": ["image", "site", "application", "gemfire", "resources", "storage", "wan"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1, "not": { "pattern": ":" } },
+        "digest": { "type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$" },
+        "tag": { "type": "string", "not": { "const": "latest" } },
+        "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] },
+        "pullSecrets": { "type": "array" }
+      }
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "role", "distributedSystemId", "clusterDomain", "locators", "tls", "credentialsSecretName"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,15}-(prod|dev|stg|qa)-(primary|dr)$" },
+        "role": { "enum": ["primary", "dr"] },
+        "distributedSystemId": { "type": "integer", "minimum": 11, "maximum": 99 },
+        "clusterDomain": { "type": "string" },
+        "locators": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "partner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "namespace", "distributedSystemId", "locators"],
+          "properties": {
+            "name": { "type": "string" },
+            "namespace": { "type": "string" },
+            "distributedSystemId": { "type": "integer", "minimum": 11, "maximum": 99 },
+            "locators": { "type": "array", "minItems": 1, "items": { "type": "string" } }
+          }
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuerName", "secretName", "passwordSecretName"],
+          "properties": {
+            "issuerName": { "type": "string" },
+            "secretName": { "type": "string" },
+            "passwordSecretName": { "type": "string" }
+          }
+        },
+        "credentialsSecretName": { "type": "string" }
+      }
+    },
+    "application": { "type": "object", "required": ["name", "environment"] },
+    "gemfire": { "type": "object", "required": ["cluster", "regions", "pdx", "resourceManager"] },
+    "resources": { "type": "object", "required": ["member"] },
+    "storage": { "type": "object", "required": ["size", "storageClassName"] },
+    "wan": { "type": "object", "required": ["enabled"] }
+  }
+}

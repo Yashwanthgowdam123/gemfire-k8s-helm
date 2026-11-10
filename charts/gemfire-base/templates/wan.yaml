@@ -1,0 +1,27 @@
+# WAN isolation: this site may talk ONLY to its partner namespace (same application and
+# environment, other role), and only on the locator port and the gateway-receiver range.
+# ecom-prod-* therefore cannot reach ecom-dev-*, swp-*, or b2c-* at the network layer, in
+# addition to the locator wiring and the per-environment CA.
+# The gateway sender/receiver objects themselves are declared in cache.xml (configmap.yaml).
+{{- if and .Values.wan.enabled .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "gf.name" . }}-wan
+  labels: {{ include "gf.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+  - from:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.site.partner.namespace }} } }
+    ports:
+    - { protocol: TCP, port: {{ .Values.ports.locator }} }
+    - { protocol: TCP, port: {{ .Values.ports.wanReceiverStart }}, endPort: {{ .Values.ports.wanReceiverEnd }} }
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.site.partner.namespace }} } }
+    ports:
+    - { protocol: TCP, port: {{ .Values.ports.locator }} }
+    - { protocol: TCP, port: {{ .Values.ports.wanReceiverStart }}, endPort: {{ .Values.ports.wanReceiverEnd }} }
+{{- end }}

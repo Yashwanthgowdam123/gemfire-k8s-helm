@@ -1,0 +1,14 @@
+# Controlled deployment context: the ONLY place distributed-system-id codes are defined.
+# ds-id = environmentCode * 10 + siteCode  (e.g. dev DR = 2*10+2 = 22).
+# IDs repeat across applications by design. Isolation comes from per-pair locator wiring,
+# per-environment CA, and NetworkPolicy. Never key dashboards/alerts on ds-id alone.
+environments:
+  prod: 1
+  dev:  2
+  stg:  3
+  qa:   4
+sites:
+  primary: 1
+  dr:      2
+ports:
+  locator: 10334

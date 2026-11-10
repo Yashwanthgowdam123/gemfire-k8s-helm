@@ -1,0 +1,23 @@
+# Scrape wiring only. Dashboards, alert rules and the metric catalogue live in the
+# gemfire-monitoring chart. Every series is labelled with application/environment/site
+# (never rely on distributed-system-id alone: IDs repeat across applications).
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gf.name" . }}
+  labels: {{ include "gf.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      gemfire/metrics: "true"
+  endpoints:
+  - port: metrics
+    interval: {{ .Values.monitoring.serviceMonitor.interval }}
+    relabelings:
+    - { targetLabel: application, replacement: {{ .Values.application.name | quote }} }
+    - { targetLabel: environment, replacement: {{ .Values.application.environment | quote }} }
+    - { targetLabel: site, replacement: {{ .Values.site.role | quote }} }
+    - { sourceLabels: [__meta_kubernetes_pod_name], targetLabel: member }
+{{- end }}

@@ -1,0 +1,112 @@
+# Servers: data members. Each pod owns one PVC (disk store = persistence + overflow + PDX
+# registry + persistent WAN queue). replicas == gemfire.cluster.memberCount from the shared file.
+# Scaling is a controlled workflow (docs/operations.md); no HPA is ever attached.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gf.name" . }}-server
+  labels: {{ include "gf.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gf.name" . }}-server-hl
+  replicas: {{ .Values.gemfire.cluster.memberCount }}
+  # Parallel start: persistent members recovering from disk wait for the peers that hold the
+  # latest data; OrderedReady could deadlock a full-site restart. Rolling UPDATES are still
+  # one pod at a time (StatefulSet waits for Ready) and the PDB caps voluntary disruption.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: { partition: {{ .Values.rollout.serverPartition }} }
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ .Values.persistence.retentionPolicy }}
+    whenScaled: {{ .Values.persistence.retentionPolicy }}
+  selector:
+    matchLabels: {{ include "gf.selector" (dict "root" . "component" "server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gf.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "gf.name" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: {{ .Values.runAsUser }}
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      {{- include "gf.scheduling" (dict "root" . "component" "server") | nindent 6 }}
+      containers:
+      - name: server
+        image: {{ include "gf.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["server"]
+        securityContext: {{ include "gf.securityContext" . | nindent 10 }}
+        env:
+        - { name: POD_NAME, valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+        - { name: POD_NAMESPACE, valueFrom: { fieldRef: { fieldPath: metadata.namespace } } }
+        - { name: HEADLESS_SERVICE, value: {{ include "gf.name" . }}-server-hl }
+        - { name: CLUSTER_DOMAIN, value: {{ .Values.site.clusterDomain | quote }} }
+        - { name: SERVER_PORT, value: {{ .Values.ports.server | quote }} }
+        - { name: SECURITY_ENABLED, value: {{ .Values.security.enabled | quote }} }
+        {{- if .Values.wan.enabled }}
+        - { name: WAN_REMOTE_DS_ID, value: {{ .Values.site.partner.distributedSystemId | quote }} }
+        {{- end }}
+        - { name: MAX_CONNECTIONS, value: {{ .Values.gemfire.cacheServer.maxConnections | quote }} }
+        - { name: MAX_THREADS, value: {{ .Values.gemfire.cacheServer.maxThreads | quote }} }
+        - { name: MAX_PING_MS, value: {{ .Values.gemfire.cacheServer.maximumTimeBetweenPingsMs | quote }} }
+        - name: JAVA_OPTS
+          value: >-
+            -XX:MaxRAMPercentage={{ .Values.gemfire.jvm.heapPercentOfMemoryLimit }}
+            {{- if .Values.monitoring.jmxExporter.enabled }}
+            -javaagent:/opt/jmx_exporter/jmx_prometheus_javaagent.jar={{ .Values.ports.metrics }}:/config/jmx-exporter.yaml
+            {{- end }}
+        ports:
+        - { name: server, containerPort: {{ .Values.ports.server }} }
+        - { name: wan, containerPort: {{ .Values.ports.wanReceiverStart }} }
+        - { name: metrics, containerPort: {{ .Values.ports.metrics }} }
+        resources: {{ toYaml .Values.resources.member | nindent 10 }}
+        startupProbe:
+          tcpSocket: { port: server }
+          periodSeconds: 10
+          failureThreshold: {{ .Values.probes.serverStartupFailureThreshold }}
+        readinessProbe:
+          tcpSocket: { port: server }
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket: { port: server }
+          periodSeconds: 20
+          failureThreshold: 6
+        volumeMounts:
+        - { name: data, mountPath: /data }
+        - { name: config, mountPath: /config, readOnly: true }
+        - { name: runtime, mountPath: /runtime }
+        - { name: logs, mountPath: /logs }
+        - { name: tmp, mountPath: /tmp }
+        {{- if .Values.security.enabled }}
+        - { name: tls, mountPath: /tls, readOnly: true }
+        - { name: tls-password, mountPath: /tls-password, readOnly: true }
+        - { name: credentials, mountPath: /credentials, readOnly: true }
+        {{- end }}
+      {{- if .Values.logging.sidecar }}
+      - name: log-tail
+        image: {{ include "gf.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/bin/sh", "-c", "until ls /logs/*.log >/dev/null 2>&1; do sleep 2; done; exec tail -n +1 -F /logs/*.log"]
+        securityContext: {{ include "gf.securityContext" . | nindent 10 }}
+        resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 100m, memory: 64Mi } }
+        volumeMounts:
+        - { name: logs, mountPath: /logs, readOnly: true }
+      {{- end }}
+      volumes:
+      - { name: config, configMap: { name: {{ include "gf.name" . }}-config } }
+      - { name: runtime, emptyDir: { medium: Memory, sizeLimit: 8Mi } }
+      - { name: logs, emptyDir: { sizeLimit: 2Gi } }
+      - { name: tmp, emptyDir: { sizeLimit: 512Mi } }
+      {{- if .Values.security.enabled }}
+      - { name: tls, secret: { secretName: {{ .Values.site.tls.secretName }}, defaultMode: 0440 } }
+      - { name: tls-password, secret: { secretName: {{ .Values.site.tls.passwordSecretName }}, defaultMode: 0440 } }
+      - { name: credentials, secret: { secretName: {{ .Values.site.credentialsSecretName }}, defaultMode: 0440 } }
+      {{- end }}
+  {{- include "gf.volumeClaimTemplates" (dict "root" . "size" .Values.storage.size) | nindent 2 }}

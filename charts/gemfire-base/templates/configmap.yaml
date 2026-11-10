@@ -1,0 +1,149 @@
+{{- include "gf.validate" . -}}
+{{/*
+  gemfire.properties for locators and servers, plus ONE cache.xml for servers.
+
+  Design: regions, disk store, PDX, WAN sender/receiver and indexes are declared in cache.xml
+  (declarative; every server applies the identical file at start; a change rolls the pods).
+  Cluster configuration is disabled so gfsh-created objects cannot drift from Git.
+
+  cache.xml is byte-identical at Primary and DR: the only site-specific values it needs are
+  injected at runtime as ${...} placeholders (wan.remote.ds.id, member.hostname) by the
+  entrypoint. scripts/render-helm.sh checksums cache.xml to prove Primary == DR.
+  Secrets are never written here: the entrypoint appends them from mounted Secret files.
+*/}}
+{{- define "gf.commonProps" -}}
+distributed-system-id={{ .Values.site.distributedSystemId }}
+locators={{ include "gf.locators" . }}
+{{- if .Values.wan.enabled }}
+remote-locators={{ join "," .Values.site.partner.locators }}
+{{- end }}
+{{- range $k, $v := .Values.gemfire.properties }}
+{{ $k }}={{ $v }}
+{{- end }}
+{{- if .Values.security.enabled }}
+ssl-enabled-components=all
+ssl-keystore=/tls/keystore.p12
+ssl-keystore-type=PKCS12
+ssl-truststore=/tls/truststore.p12
+ssl-truststore-type=PKCS12
+ssl-require-authentication=true
+ssl-endpoint-identification-enabled={{ .Values.security.tls.endpointIdentification }}
+security-manager={{ .Values.security.securityManager }}
+security-json=security.json
+security-peer-auth-init={{ .Values.security.peerAuthInit }}
+{{- end }}
+{{- end -}}
+
+{{- define "gf.cacheXml" -}}
+<?xml version="1.0" encoding="UTF-8"?>
+<cache xmlns="http://geode.apache.org/schema/cache"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://geode.apache.org/schema/cache http://geode.apache.org/schema/cache/cache-1.0.xsd"
+       version="1.0">
+{{- $ds := "appStore" }}
+{{- $d := .Values.gemfire.diskStore }}
+{{- $sid := printf "%s-%s-wan" .Values.application.name .Values.application.environment }}
+{{- if .Values.wan.enabled }}
+{{- $s := .Values.wan.sender }}
+  <gateway-sender id="{{ $sid }}"
+                  remote-distributed-system-id="${wan.remote.ds.id}"
+                  parallel="{{ $s.parallel }}"
+                  manual-start="false"
+                  enable-persistence="{{ $s.persistent }}"
+                  disk-store-name="{{ $ds }}"
+                  disk-synchronous="{{ $s.diskSynchronous }}"
+                  dispatcher-threads="{{ $s.dispatcherThreads }}"
+                  batch-size="{{ $s.batchSize }}"
+                  batch-time-interval="{{ $s.batchTimeIntervalMs }}"
+                  maximum-queue-memory="{{ $s.maximumQueueMemoryMb }}"
+                  order-policy="{{ $s.orderPolicy }}"
+                  enable-batch-conflation="{{ $s.conflationEnabled }}"
+                  alert-threshold="{{ $s.alertThresholdMs }}"/>
+  <gateway-receiver start-port="{{ .Values.ports.wanReceiverStart }}"
+                    end-port="{{ .Values.ports.wanReceiverEnd }}"
+                    hostname-for-senders="${member.hostname}"
+                    maximum-time-between-pings="{{ .Values.wan.receiver.maximumTimeBetweenPingsMs }}"
+                    manual-start="false"/>
+{{- end }}
+  <disk-store name="{{ $ds }}"
+              auto-compact="{{ $d.autoCompact }}"
+              compaction-threshold="{{ $d.compactionThreshold }}"
+              max-oplog-size="{{ $d.maxOplogSizeMb }}"
+              allow-force-compaction="{{ $d.allowForceCompaction }}"
+              queue-size="{{ $d.queueSize }}"
+              disk-usage-warning-percentage="{{ $d.diskUsageWarningPercentage }}"
+              disk-usage-critical-percentage="{{ $d.diskUsageCriticalPercentage }}">
+    <disk-dirs>
+      <disk-dir>/data/server/diskstore</disk-dir>
+    </disk-dirs>
+  </disk-store>
+  <pdx read-serialized="{{ .Values.gemfire.pdx.readSerialized }}"
+       ignore-unread-fields="{{ .Values.gemfire.pdx.ignoreUnreadFields }}"
+       persistent="true"
+       disk-store-name="{{ $ds }}">
+{{- with .Values.gemfire.pdx.autoSerializableClasses }}
+    <pdx-serializer>
+      <class-name>org.apache.geode.pdx.ReflectionBasedAutoSerializer</class-name>
+      <parameter name="classes"><string>{{ join "," . }}</string></parameter>
+    </pdx-serializer>
+{{- end }}
+  </pdx>
+{{- range $r := .Values.gemfire.regions }}
+  <region name="{{ $r.name }}">
+    <region-attributes refid="{{ $r.type }}"
+                       disk-store-name="{{ $ds }}"
+                       concurrency-checks-enabled="true"
+{{- if and $.Values.wan.enabled (ne (toString (get $r "replicateOverWan")) "false") }}
+                       gateway-sender-ids="{{ $sid }}"
+{{- end }}>
+{{- with $r.expiration }}
+{{- with .ttl }}
+      <entry-time-to-live><expiration-attributes timeout="{{ .timeoutSeconds }}" action="{{ .action | lower }}"/></entry-time-to-live>
+{{- end }}
+{{- with .idleTimeout }}
+      <entry-idle-time><expiration-attributes timeout="{{ .timeoutSeconds }}" action="{{ .action | lower }}"/></entry-idle-time>
+{{- end }}
+{{- end }}
+      <partition-attributes redundant-copies="{{ $r.redundantCopies }}"{{ if $r.totalNumBuckets }} total-num-buckets="{{ $r.totalNumBuckets }}"{{ end }}/>
+      <eviction-attributes>
+{{- $e := default (dict "policy" "HEAP_LRU") $r.eviction }}
+{{- if eq $e.policy "ENTRY_COUNT" }}
+        <lru-entry-count maximum="{{ $e.maximum }}" action="overflow-to-disk"/>
+{{- else if eq $e.policy "MEMORY_SIZE" }}
+        <lru-memory-size maximum="{{ $e.maximum }}" action="overflow-to-disk"/>
+{{- else }}
+        <lru-heap-percentage action="overflow-to-disk"/>
+{{- end }}
+      </eviction-attributes>
+    </region-attributes>
+{{- range $r.indexes }}
+    <index name="{{ .name }}" from-clause="/{{ $r.name }}" expression="{{ .expression }}"{{ if eq .type "PRIMARY_KEY" }} key-index="true"{{ end }}/>
+{{- end }}
+  </region>
+{{- end }}
+  <resource-manager critical-heap-percentage="{{ .Values.gemfire.resourceManager.criticalHeapPercentage }}"
+                    eviction-heap-percentage="{{ .Values.gemfire.resourceManager.evictionHeapPercentage }}"/>
+</cache>
+{{- end -}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gf.name" . }}-config
+  labels: {{ include "gf.labels" . | nindent 4 }}
+data:
+  gemfire-locator.properties: |
+    {{- include "gf.commonProps" . | nindent 4 }}
+    enable-cluster-configuration=false
+  gemfire-server.properties: |
+    {{- include "gf.commonProps" . | nindent 4 }}
+    use-cluster-configuration=false
+    cache-xml-file=/config/cache.xml
+  cache.xml: |
+    {{- include "gf.cacheXml" . | nindent 4 }}
+  jmx-exporter.yaml: |
+    # Minimal pass-through. The metric catalogue is defined in the gemfire-monitoring chart.
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+    - pattern: ".*"

@@ -1,0 +1,23 @@
+# Headless Services give every pod a stable DNS name:
+#   <release>-locator-N.<release>-locator-hl.<ns>.svc.<domain>
+# publishNotReadyAddresses: members must discover each other BEFORE they are Ready
+# (a persistent member waits for peers during disk-store recovery).
+{{- range $c := list "locator" "server" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gf.name" $ }}-{{ $c }}-hl
+  labels: {{ include "gf.labels" $ | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector: {{ include "gf.selector" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+  {{- if eq $c "locator" }}
+  - { name: locator, port: {{ $.Values.ports.locator }} }
+  {{- else }}
+  - { name: server, port: {{ $.Values.ports.server }} }
+  - { name: wan, port: {{ $.Values.ports.wanReceiverStart }} }
+  {{- end }}
+{{- end }}
